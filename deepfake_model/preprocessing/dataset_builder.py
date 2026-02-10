@@ -1,0 +1,458 @@
+"""
+dataset_builder.py
+Build dataset from videos by combining all preprocessing steps
+Optimized for DFDC, FaceForensics++, and Celeb-DF datasets
+"""
+
+import cv2
+import numpy as np
+import os
+from typing import List, Tuple, Dict, Optional
+from pathlib import Path
+
+from video_reader import VideoReader
+from frame_extractor import FrameExtractor
+from face_detector import FaceDetector
+from quality_filter import QualityFilter
+
+
+class DatasetBuilder:
+    """
+    Build deepfake detection dataset from videos
+    Handles corrupted videos and compressed datasets
+    """
+    
+    def __init__(self,
+                 face_detector_method: str = 'haar',
+                 blur_threshold: float = 50.0,
+                 min_brightness: float = 30.0,
+                 max_brightness: float = 230.0,
+                 min_contrast: float = 30.0,
+                 min_size: int = 60,
+                 extraction_fps: float = 1.0,
+                 target_size: Tuple[int, int] = (380, 380),
+                 padding: float = 0.2):
+        """
+        Initialize dataset builder
+        
+        Args:
+            face_detector_method: Face detection method ('haar', 'mtcnn', 'retinaface')
+            blur_threshold: Minimum blur threshold (lowered for compressed videos)
+            min_brightness: Minimum acceptable brightness
+            max_brightness: Maximum acceptable brightness
+            min_contrast: Minimum contrast value
+            min_size: Minimum face size in pixels
+            extraction_fps: Frames per second to extract
+            target_size: Output face image size (width, height)
+            padding: Padding ratio around detected faces
+        """
+        self.face_detector = FaceDetector(method=face_detector_method)
+        
+        # Initialize quality filter with relaxed thresholds for compressed videos
+        self.quality_filter = QualityFilter(
+            blur_threshold=blur_threshold,
+            min_brightness=min_brightness,
+            max_brightness=max_brightness,
+            min_contrast=min_contrast,
+            min_size=min_size
+        )
+        
+        self.extraction_fps = extraction_fps
+        self.target_size = target_size
+        self.padding = padding
+        
+        # Statistics
+        self.stats = {
+            'total_videos': 0,
+            'successful_videos': 0,
+            'failed_videos': 0,
+            'total_faces': 0,
+            'failed_reasons': []
+        }
+    
+    def process_video(self, video_path: str,
+                      max_faces: int = None,
+                      verbose: bool = True) -> List[np.ndarray]:
+        """
+        Process single video and extract quality faces
+        
+        Args:
+            video_path: Path to video file
+            max_faces: Maximum number of faces to extract (None = all)
+            verbose: Print progress
+        
+        Returns:
+            List of preprocessed face images (normalized, RGB, resized)
+        """
+        if verbose:
+            print(f"Processing: {os.path.basename(video_path)}")
+        
+        faces = []
+        self.stats['total_videos'] += 1
+        
+        # Check if file exists
+        if not os.path.exists(video_path):
+            if verbose:
+                print(f"  ❌ ERROR: Video file not found")
+            self.stats['failed_videos'] += 1
+            self.stats['failed_reasons'].append(('not_found', video_path))
+            return []
+        
+        try:
+            with VideoReader(video_path) as vr:
+                # Get video metadata
+                if verbose:
+                    metadata = vr.get_metadata()
+                    print(f"  Duration: {metadata['duration']:.2f}s, "
+                          f"FPS: {metadata['fps']:.1f}, "
+                          f"Resolution: {metadata['width']}x{metadata['height']}")
+                
+                # Extract frames
+                extractor = FrameExtractor(vr)
+                frames = extractor.extract_by_fps(self.extraction_fps)
+                
+                if verbose:
+                    print(f"  Extracted {len(frames)} frames")
+                
+                if len(frames) == 0:
+                    if verbose:
+                        print(f"  ⚠️  WARNING: No frames extracted")
+                    self.stats['failed_videos'] += 1
+                    self.stats['failed_reasons'].append(('no_frames', video_path))
+                    return []
+                
+                # Process each frame
+                frames_with_faces = 0
+                for frame_num, frame in frames:
+                    # Detect and crop faces
+                    detected_faces = self.face_detector.crop_faces(
+                        frame, 
+                        padding=self.padding
+                    )
+                    
+                    if len(detected_faces) > 0:
+                        frames_with_faces += 1
+                    
+                    # Filter by quality and preprocess
+                    for face in detected_faces:
+                        if self.quality_filter.passes_quality_check(face):
+                            # Resize to target size
+                            face_resized = cv2.resize(
+                                face, 
+                                self.target_size,
+                                interpolation=cv2.INTER_LINEAR
+                            )
+                            
+                            # Convert BGR to RGB
+                            face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+                            
+                            # Normalize to [0, 1]
+                            face_normalized = face_rgb.astype('float32') / 255.0
+                            
+                            faces.append(face_normalized)
+                            
+                            # Check max limit
+                            if max_faces and len(faces) >= max_faces:
+                                if verbose:
+                                    print(f"  ✓ Reached max faces limit: {max_faces}")
+                                self.stats['successful_videos'] += 1
+                                self.stats['total_faces'] += len(faces)
+                                return faces
+                
+                if verbose:
+                    print(f"  ✓ Collected {len(faces)} quality faces "
+                          f"from {frames_with_faces}/{len(frames)} frames")
+                
+                if len(faces) == 0:
+                    if verbose:
+                        print(f"  ⚠️  WARNING: No quality faces found")
+                    self.stats['failed_videos'] += 1
+                    self.stats['failed_reasons'].append(('no_quality_faces', video_path))
+                else:
+                    self.stats['successful_videos'] += 1
+                    self.stats['total_faces'] += len(faces)
+        
+        except FileNotFoundError:
+            if verbose:
+                print(f"  ❌ ERROR: Video file not found")
+            self.stats['failed_videos'] += 1
+            self.stats['failed_reasons'].append(('file_not_found', video_path))
+            return []
+        
+        except RuntimeError as e:
+            if verbose:
+                print(f"  ❌ ERROR: Cannot open video - {str(e)}")
+            self.stats['failed_videos'] += 1
+            self.stats['failed_reasons'].append(('open_failed', video_path))
+            return []
+        
+        except cv2.error as e:
+            if verbose:
+                print(f"  ❌ ERROR: OpenCV error - {str(e)}")
+            self.stats['failed_videos'] += 1
+            self.stats['failed_reasons'].append(('opencv_error', video_path))
+            return []
+        
+        except Exception as e:
+            if verbose:
+                print(f"  ❌ ERROR: Unexpected error - {type(e).__name__}: {str(e)}")
+            self.stats['failed_videos'] += 1
+            self.stats['failed_reasons'].append(('unexpected', video_path))
+            return []
+        
+        return faces
+    
+    def process_dataset(self,
+                       video_paths: List[str],
+                       labels: List[int],
+                       max_faces_per_video: int = 50,
+                       save_path: Optional[str] = None,
+                       verbose: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Process multiple videos to create dataset
+        
+        Args:
+            video_paths: List of video paths
+            labels: List of labels (0=real, 1=fake)
+            max_faces_per_video: Max faces to extract per video
+            save_path: Path to save dataset (None = don't save)
+            verbose: Print progress
+        
+        Returns:
+            (faces_array, labels_array) - X and y for training
+        """
+        if len(video_paths) != len(labels):
+            raise ValueError(f"video_paths ({len(video_paths)}) and labels ({len(labels)}) must have same length")
+        
+        all_faces = []
+        all_labels = []
+        
+        # Reset statistics
+        self.stats = {
+            'total_videos': 0,
+            'successful_videos': 0,
+            'failed_videos': 0,
+            'total_faces': 0,
+            'failed_reasons': []
+        }
+        
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"PROCESSING {len(video_paths)} VIDEOS")
+            print(f"{'='*70}\n")
+        
+        for idx, (video_path, label) in enumerate(zip(video_paths, labels)):
+            if verbose:
+                print(f"[{idx+1}/{len(video_paths)}] ", end='')
+            
+            try:
+                faces = self.process_video(
+                    video_path,
+                    max_faces=max_faces_per_video,
+                    verbose=verbose
+                )
+                
+                if faces:
+                    all_faces.extend(faces)
+                    all_labels.extend([label] * len(faces))
+                else:
+                    if verbose:
+                        print(f"  ⚠️  No faces extracted from this video")
+            
+            except KeyboardInterrupt:
+                if verbose:
+                    print(f"\n\n⚠️  Processing interrupted by user")
+                break
+            
+            except Exception as e:
+                if verbose:
+                    print(f"  ❌ CRITICAL ERROR: {type(e).__name__}: {str(e)}")
+                continue
+        
+        # Convert to numpy arrays
+        if len(all_faces) == 0:
+            if verbose:
+                print(f"\n❌ ERROR: No faces extracted from any video!")
+            return np.array([]), np.array([])
+        
+        X = np.array(all_faces, dtype='float32')
+        y = np.array(all_labels, dtype='int32')
+        
+        # Print summary
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"DATASET PROCESSING COMPLETE")
+            print(f"{'='*70}")
+            print(f"Videos processed: {self.stats['total_videos']}")
+            print(f"  ✓ Successful: {self.stats['successful_videos']}")
+            print(f"  ✗ Failed: {self.stats['failed_videos']}")
+            print(f"\nFaces extracted: {len(X)}")
+            print(f"  Real faces (label=0): {np.sum(y == 0)}")
+            print(f"  Fake faces (label=1): {np.sum(y == 1)}")
+            print(f"\nDataset shape: {X.shape}")
+            print(f"Labels shape: {y.shape}")
+            print(f"Memory usage: {X.nbytes / (1024**2):.2f} MB")
+            
+            # Show failure reasons if any
+            if self.stats['failed_videos'] > 0:
+                print(f"\nFailure breakdown:")
+                failure_counts = {}
+                for reason, _ in self.stats['failed_reasons']:
+                    failure_counts[reason] = failure_counts.get(reason, 0) + 1
+                for reason, count in failure_counts.items():
+                    print(f"  {reason}: {count}")
+            
+            print(f"{'='*70}\n")
+        
+        # Save if path provided
+        if save_path:
+            self.save_dataset(X, y, save_path, verbose)
+        
+        return X, y
+    
+    def save_dataset(self, X: np.ndarray, y: np.ndarray,
+                    save_path: str, verbose: bool = True):
+        """
+        Save dataset to disk
+        
+        Args:
+            X: Face images array
+            y: Labels array
+            save_path: Directory to save dataset
+            verbose: Print progress
+        """
+        # Create directory if it doesn't exist
+        os.makedirs(save_path, exist_ok=True)
+        
+        # Save arrays
+        X_path = os.path.join(save_path, 'X.npy')
+        y_path = os.path.join(save_path, 'y.npy')
+        
+        np.save(X_path, X)
+        np.save(y_path, y)
+        
+        if verbose:
+            print(f"💾 Dataset saved to: {save_path}")
+            print(f"  X.npy: {X.shape} ({os.path.getsize(X_path) / (1024**2):.2f} MB)")
+            print(f"  y.npy: {y.shape} ({os.path.getsize(y_path) / (1024**2):.2f} MB)")
+        
+        # Save metadata
+        metadata = {
+            'shape': X.shape,
+            'num_samples': len(X),
+            'num_real': int(np.sum(y == 0)),
+            'num_fake': int(np.sum(y == 1)),
+            'target_size': self.target_size,
+            'extraction_fps': self.extraction_fps,
+            'face_detector': self.face_detector.method,
+            'statistics': self.stats
+        }
+        
+        import json
+        metadata_path = os.path.join(save_path, 'metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        if verbose:
+            print(f"  metadata.json: Dataset info saved")
+    
+    @staticmethod
+    def load_dataset(load_path: str, verbose: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load dataset from disk
+        
+        Args:
+            load_path: Directory containing dataset
+            verbose: Print loading info
+        
+        Returns:
+            (X, y) arrays
+        """
+        X_path = os.path.join(load_path, 'X.npy')
+        y_path = os.path.join(load_path, 'y.npy')
+        
+        if not os.path.exists(X_path) or not os.path.exists(y_path):
+            raise FileNotFoundError(f"Dataset files not found in {load_path}")
+        
+        X = np.load(X_path)
+        y = np.load(y_path)
+        
+        if verbose:
+            print(f"📂 Dataset loaded from: {load_path}")
+            print(f"  X: {X.shape}")
+            print(f"  y: {y.shape}")
+            print(f"  Real: {np.sum(y == 0)}, Fake: {np.sum(y == 1)}")
+        
+        return X, y
+    
+    def get_statistics(self) -> Dict:
+        """
+        Get processing statistics
+        
+        Returns:
+            Dictionary with statistics
+        """
+        return self.stats.copy()
+    
+    def reset_statistics(self):
+        """Reset statistics counters"""
+        self.stats = {
+            'total_videos': 0,
+            'successful_videos': 0,
+            'failed_videos': 0,
+            'total_faces': 0,
+            'failed_reasons': []
+        }
+
+
+# ============ USAGE EXAMPLE ============
+if __name__ == "__main__":
+    # Example 1: Basic usage
+    print("Example 1: Basic Dataset Building")
+    print("-" * 70)
+    
+    builder = DatasetBuilder(
+        face_detector_method='haar',
+        blur_threshold=50.0,
+        extraction_fps=1.0,
+        target_size=(380, 380),
+        padding=0.2
+    )
+    
+    # Example video paths
+    video_paths = [
+        'Hollow Knight Silksong 2025-12-27 23-14-16.mp4',
+        'Hollow Knight Silksong 2025-12-28 21-43-27.mp4'
+    ]
+    
+    labels = [0, 1]  # 0=real, 1=fake
+    
+    # Build dataset
+    X, y = builder.process_dataset(
+        video_paths=video_paths,
+        labels=labels,
+        max_faces_per_video=50,
+        save_path='deepfake_model/dataset',
+        verbose=True
+    )
+    
+    print(f"\nFinal dataset shape: {X.shape}")
+    print(f"Labels shape: {y.shape}")
+    
+    # Example 2: Load existing dataset
+    print("\n" + "="*70)
+    print("Example 2: Loading Saved Dataset")
+    print("-" * 70)
+    
+    X_loaded, y_loaded = DatasetBuilder.load_dataset('deepfake_model/dataset')
+    
+    # Example 3: Get statistics
+    print("\n" + "="*70)
+    print("Example 3: Processing Statistics")
+    print("-" * 70)
+    
+    stats = builder.get_statistics()
+    print(f"Total videos: {stats['total_videos']}")
+    print(f"Successful: {stats['successful_videos']}")
+    print(f"Failed: {stats['failed_videos']}")
+    print(f"Total faces: {stats['total_faces']}")
