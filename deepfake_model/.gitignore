@@ -1,0 +1,34 @@
+# Datasets (too large)
+dataset/raw_dataset/
+dataset/processed_dataset/
+dataset/test_output/
+
+# Batch files
+*.npz
+
+# Large numpy files
+*.npy
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Model checkpoints (large)
+*.h5
+*.keras
+*.pt
+*.pth
+
+# Logs
+*.log
+nohup.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

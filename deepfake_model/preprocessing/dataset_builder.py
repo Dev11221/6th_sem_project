@@ -10,6 +10,7 @@ import os
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 
+from dataset_loader import FaceForensicsLoader
 from video_reader import VideoReader
 from frame_extractor import FrameExtractor
 from face_detector import FaceDetector
@@ -30,7 +31,7 @@ class DatasetBuilder:
                  min_contrast: float = 30.0,
                  min_size: int = 60,
                  extraction_fps: float = 1.0,
-                 target_size: Tuple[int, int] = (380, 380),
+                 target_size: Tuple[int, int] = (224, 224),
                  padding: float = 0.2):
         """
         Initialize dataset builder
@@ -203,29 +204,25 @@ class DatasetBuilder:
         return faces
     
     def process_dataset(self,
-                       video_paths: List[str],
-                       labels: List[int],
-                       max_faces_per_video: int = 50,
-                       save_path: Optional[str] = None,
-                       verbose: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+                    video_paths: List[str],
+                    labels: List[int],
+                    max_faces_per_video: int = 50,
+                    save_path: Optional[str] = None,
+                    verbose: bool = True,
+                    batch_size: int = 50) -> Tuple[np.ndarray, np.ndarray]:  # ← Add batch_size
         """
         Process multiple videos to create dataset
-        
-        Args:
-            video_paths: List of video paths
-            labels: List of labels (0=real, 1=fake)
-            max_faces_per_video: Max faces to extract per video
-            save_path: Path to save dataset (None = don't save)
-            verbose: Print progress
-        
-        Returns:
-            (faces_array, labels_array) - X and y for training
         """
         if len(video_paths) != len(labels):
             raise ValueError(f"video_paths ({len(video_paths)}) and labels ({len(labels)}) must have same length")
         
+        # Create save directory first
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+        
         all_faces = []
         all_labels = []
+        batch_count = 0
         
         # Reset statistics
         self.stats = {
@@ -239,6 +236,7 @@ class DatasetBuilder:
         if verbose:
             print(f"\n{'='*70}")
             print(f"PROCESSING {len(video_paths)} VIDEOS")
+            print(f"Saving in batches of {batch_size} videos to avoid memory issues")
             print(f"{'='*70}\n")
         
         for idx, (video_path, label) in enumerate(zip(video_paths, labels)):
@@ -255,9 +253,6 @@ class DatasetBuilder:
                 if faces:
                     all_faces.extend(faces)
                     all_labels.extend([label] * len(faces))
-                else:
-                    if verbose:
-                        print(f"  ⚠️  No faces extracted from this video")
             
             except KeyboardInterrupt:
                 if verbose:
@@ -268,47 +263,88 @@ class DatasetBuilder:
                 if verbose:
                     print(f"  ❌ CRITICAL ERROR: {type(e).__name__}: {str(e)}")
                 continue
+            
+            # 🔥 SAVE BATCH EVERY N VIDEOS
+            if (idx + 1) % batch_size == 0 or (idx + 1) == len(video_paths):
+                if len(all_faces) > 0 and save_path:
+                    batch_count += 1
+                    
+                    X_batch = np.array(all_faces, dtype='float32')
+                    y_batch = np.array(all_labels, dtype='int32')
+                    
+                    batch_file = os.path.join(save_path, f'batch_{batch_count:03d}.npz')
+                    np.savez_compressed(batch_file, X=X_batch, y=y_batch)
+                    
+                    if verbose:
+                        print(f"\n💾 Saved batch {batch_count}: {X_batch.shape} ({X_batch.nbytes / (1024**2):.1f} MB)")
+                    
+                    # Clear memory
+                    all_faces = []
+                    all_labels = []
         
-        # Convert to numpy arrays
-        if len(all_faces) == 0:
-            if verbose:
-                print(f"\n❌ ERROR: No faces extracted from any video!")
-            return np.array([]), np.array([])
-        
-        X = np.array(all_faces, dtype='float32')
-        y = np.array(all_labels, dtype='int32')
-        
-        # Print summary
+        # 🔥 MERGE ALL BATCHES
         if verbose:
             print(f"\n{'='*70}")
-            print(f"DATASET PROCESSING COMPLETE")
+            print(f"MERGING {batch_count} BATCHES")
             print(f"{'='*70}")
-            print(f"Videos processed: {self.stats['total_videos']}")
-            print(f"  ✓ Successful: {self.stats['successful_videos']}")
-            print(f"  ✗ Failed: {self.stats['failed_videos']}")
-            print(f"\nFaces extracted: {len(X)}")
-            print(f"  Real faces (label=0): {np.sum(y == 0)}")
-            print(f"  Fake faces (label=1): {np.sum(y == 1)}")
-            print(f"\nDataset shape: {X.shape}")
-            print(f"Labels shape: {y.shape}")
-            print(f"Memory usage: {X.nbytes / (1024**2):.2f} MB")
-            
-            # Show failure reasons if any
-            if self.stats['failed_videos'] > 0:
-                print(f"\nFailure breakdown:")
-                failure_counts = {}
-                for reason, _ in self.stats['failed_reasons']:
-                    failure_counts[reason] = failure_counts.get(reason, 0) + 1
-                for reason, count in failure_counts.items():
-                    print(f"  {reason}: {count}")
-            
-            print(f"{'='*70}\n")
         
-        # Save if path provided
-        if save_path:
-            self.save_dataset(X, y, save_path, verbose)
+        if save_path and batch_count > 0:
+            X_list = []
+            y_list = []
+            
+            for i in range(1, batch_count + 1):
+                batch_file = os.path.join(save_path, f'batch_{i:03d}.npz')
+                data = np.load(batch_file)
+                X_list.append(data['X'])
+                y_list.append(data['y'])
+                data.close()
+                
+                if verbose:
+                    print(f"Loaded batch {i}/{batch_count}")
+            
+            X = np.concatenate(X_list)
+            y = np.concatenate(y_list)
+            
+            # Delete batch files to save space
+            import time
+            for i in range(1, batch_count + 1):
+                batch_file = os.path.join(save_path, f'batch_{i:03d}.npz')
+                try:
+                    os.remove(batch_file)
+                except PermissionError:
+                    time.sleep(0.1)  # Wait a bit
+                    os.remove(batch_file)  # Try again
+            
+            if verbose:
+                print(f"\n{'='*70}")
+                print(f"DATASET PROCESSING COMPLETE")
+                print(f"{'='*70}")
+                print(f"Videos processed: {self.stats['total_videos']}")
+                print(f"  ✓ Successful: {self.stats['successful_videos']}")
+                print(f"  ✗ Failed: {self.stats['failed_videos']}")
+                print(f"\nFaces extracted: {len(X)}")
+                print(f"  Real faces (label=0): {np.sum(y == 0)}")
+                print(f"  Fake faces (label=1): {np.sum(y == 1)}")
+                print(f"\nDataset shape: {X.shape}")
+                print(f"Labels shape: {y.shape}")
+                print(f"Memory usage: {X.nbytes / (1024**2):.2f} MB")
+                
+                if self.stats['failed_videos'] > 0:
+                    print(f"\nFailure breakdown:")
+                    failure_counts = {}
+                    for reason, _ in self.stats['failed_reasons']:
+                        failure_counts[reason] = failure_counts.get(reason, 0) + 1
+                    for reason, count in failure_counts.items():
+                        print(f"  {reason}: {count}")
+                
+                print(f"{'='*70}\n")
+            
+            # Save metadata
+            self.save_dataset(X, y, save_path, verbose=False)  # Just save metadata
+            
+            return X, y
         
-        return X, y
+        return np.array([]), np.array([])
     
     def save_dataset(self, X: np.ndarray, y: np.ndarray,
                     save_path: str, verbose: bool = True):
@@ -332,7 +368,7 @@ class DatasetBuilder:
         np.save(y_path, y)
         
         if verbose:
-            print(f"💾 Dataset saved to: {save_path}")
+            print(f" Dataset saved to: {save_path}")
             print(f"  X.npy: {X.shape} ({os.path.getsize(X_path) / (1024**2):.2f} MB)")
             print(f"  y.npy: {y.shape} ({os.path.getsize(y_path) / (1024**2):.2f} MB)")
         
@@ -378,7 +414,7 @@ class DatasetBuilder:
         y = np.load(y_path)
         
         if verbose:
-            print(f"📂 Dataset loaded from: {load_path}")
+            print(f" Dataset loaded from: {load_path}")
             print(f"  X: {X.shape}")
             print(f"  y: {y.shape}")
             print(f"  Real: {np.sum(y == 0)}, Fake: {np.sum(y == 1)}")
@@ -406,53 +442,37 @@ class DatasetBuilder:
 
 
 # ============ USAGE EXAMPLE ============
+# ============ TEST EXAMPLE (20 videos, batch size 5) ============
 if __name__ == "__main__":
-    # Example 1: Basic usage
-    print("Example 1: Basic Dataset Building")
-    print("-" * 70)
+    print("="*70)
+    print("FULL DATASET PROCESSING")
+    print("="*70)
     
     builder = DatasetBuilder(
         face_detector_method='haar',
         blur_threshold=50.0,
         extraction_fps=1.0,
-        target_size=(380, 380),
+        target_size=(224, 224),
         padding=0.2
     )
     
-    # Example video paths
-    video_paths = [
-        'Hollow Knight Silksong 2025-12-27 23-14-16.mp4',
-        'Hollow Knight Silksong 2025-12-28 21-43-27.mp4'
-    ]
     
-    labels = [0, 1]  # 0=real, 1=fake
+    loader = FaceForensicsLoader('deepfake_model/dataset/raw_dataset/ff++')
+    video_paths, labels = loader.load_videos()
     
-    # Build dataset
+    print(f"\n Processing {len(video_paths)} videos")
+    print(f"   Real: {labels.count(0)}, Fake: {labels.count(1)}\n")
+    
     X, y = builder.process_dataset(
         video_paths=video_paths,
         labels=labels,
         max_faces_per_video=50,
-        save_path='deepfake_model/dataset',
-        verbose=True
+        save_path='deepfake_model/dataset/processed_dataset/ff++',
+        verbose=True,
+        batch_size=20
     )
     
-    print(f"\nFinal dataset shape: {X.shape}")
-    print(f"Labels shape: {y.shape}")
-    
-    # Example 2: Load existing dataset
-    print("\n" + "="*70)
-    print("Example 2: Loading Saved Dataset")
-    print("-" * 70)
-    
-    X_loaded, y_loaded = DatasetBuilder.load_dataset('deepfake_model/dataset')
-    
-    # Example 3: Get statistics
-    print("\n" + "="*70)
-    print("Example 3: Processing Statistics")
-    print("-" * 70)
-    
-    stats = builder.get_statistics()
-    print(f"Total videos: {stats['total_videos']}")
-    print(f"Successful: {stats['successful_videos']}")
-    print(f"Failed: {stats['failed_videos']}")
-    print(f"Total faces: {stats['total_faces']}")
+    if len(X) > 0:
+        print(f"\n COMPLETE!")
+        print(f"Shape: {X.shape}")
+        print(f"Real: {np.sum(y==0)}, Fake: {np.sum(y==1)}")
