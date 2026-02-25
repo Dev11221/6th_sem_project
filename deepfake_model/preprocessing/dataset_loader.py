@@ -72,7 +72,7 @@ class FaceForensicsLoader:
             video_paths.extend(real_videos)
             labels.extend([0] * len(real_videos))
         else:
-            print(f"⚠️  Warning: Real folder not found in {self.dataset_path}")
+            print(f"  Warning: Real folder not found in {self.dataset_path}")
         
         # Load FAKE videos
         if self.fake_folder and os.path.exists(self.fake_folder):
@@ -88,7 +88,7 @@ class FaceForensicsLoader:
             video_paths.extend(fake_videos)
             labels.extend([1] * len(fake_videos))
         else:
-            print(f"⚠️  Warning: Fake folder not found in {self.dataset_path}")
+            print(f"  Warning: Fake folder not found in {self.dataset_path}")
         
         print(f"FaceForensics Dataset: Loaded {len(video_paths)} videos")
         print(f"  Real: {labels.count(0)}, Fake: {labels.count(1)}")

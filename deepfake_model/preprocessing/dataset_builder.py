@@ -166,7 +166,7 @@ class DatasetBuilder:
                 
                 if len(faces) == 0:
                     if verbose:
-                        print(f"  ⚠️  WARNING: No quality faces found")
+                        print(f"    WARNING: No quality faces found")
                     self.stats['failed_videos'] += 1
                     self.stats['failed_reasons'].append(('no_quality_faces', video_path))
                 else:
@@ -175,28 +175,28 @@ class DatasetBuilder:
         
         except FileNotFoundError:
             if verbose:
-                print(f"  ❌ ERROR: Video file not found")
+                print(f"   ERROR: Video file not found")
             self.stats['failed_videos'] += 1
             self.stats['failed_reasons'].append(('file_not_found', video_path))
             return []
         
         except RuntimeError as e:
             if verbose:
-                print(f"  ❌ ERROR: Cannot open video - {str(e)}")
+                print(f"   ERROR: Cannot open video - {str(e)}")
             self.stats['failed_videos'] += 1
             self.stats['failed_reasons'].append(('open_failed', video_path))
             return []
         
         except cv2.error as e:
             if verbose:
-                print(f"  ❌ ERROR: OpenCV error - {str(e)}")
+                print(f"   ERROR: OpenCV error - {str(e)}")
             self.stats['failed_videos'] += 1
             self.stats['failed_reasons'].append(('opencv_error', video_path))
             return []
         
         except Exception as e:
             if verbose:
-                print(f"  ❌ ERROR: Unexpected error - {type(e).__name__}: {str(e)}")
+                print(f"   ERROR: Unexpected error - {type(e).__name__}: {str(e)}")
             self.stats['failed_videos'] += 1
             self.stats['failed_reasons'].append(('unexpected', video_path))
             return []
@@ -256,15 +256,15 @@ class DatasetBuilder:
             
             except KeyboardInterrupt:
                 if verbose:
-                    print(f"\n\n⚠️  Processing interrupted by user")
+                    print(f"\n\n  Processing interrupted by user")
                 break
             
             except Exception as e:
                 if verbose:
-                    print(f"  ❌ CRITICAL ERROR: {type(e).__name__}: {str(e)}")
+                    print(f"   CRITICAL ERROR: {type(e).__name__}: {str(e)}")
                 continue
             
-            # 🔥 SAVE BATCH EVERY N VIDEOS
+            #  SAVE BATCH EVERY N VIDEOS
             if (idx + 1) % batch_size == 0 or (idx + 1) == len(video_paths):
                 if len(all_faces) > 0 and save_path:
                     batch_count += 1
@@ -282,7 +282,7 @@ class DatasetBuilder:
                     all_faces = []
                     all_labels = []
         
-        # 🔥 MERGE ALL BATCHES
+        #  MERGE ALL BATCHES
         if verbose:
             print(f"\n{'='*70}")
             print(f"MERGING {batch_count} BATCHES")

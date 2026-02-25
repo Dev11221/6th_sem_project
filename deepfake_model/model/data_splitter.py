@@ -122,7 +122,7 @@ class DataSplitter:
             np.save(os.path.join(save_path, 'y_val.npy'), y_val)
             np.save(os.path.join(save_path, 'y_test.npy'), y_test)
             
-            print(f"\n💾 Saved to: {save_path}/")
+            print(f"\n Saved to: {save_path}/")
             print(f"   X_train.npy, X_val.npy, X_test.npy")
             print(f"   y_train.npy, y_val.npy, y_test.npy")
         else:
@@ -133,7 +133,7 @@ class DataSplitter:
             np.save(os.path.join(save_path, 'y_train.npy'), y_train)
             np.save(os.path.join(save_path, 'y_test.npy'), y_test)
             
-            print(f"\n💾 Saved to: {save_path}/")
+            print(f"\n Saved to: {save_path}/")
             print(f"   X_train.npy, X_test.npy")
             print(f"   y_train.npy, y_test.npy")
     
@@ -157,8 +157,8 @@ class DataSplitter:
             y_val = np.load(os.path.join(load_path, 'y_val.npy'))
             y_test = np.load(os.path.join(load_path, 'y_test.npy'))
             
-            print(f"📂 Loaded from: {load_path}/")
-            print(f"   Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+            print(f" Loaded from: {load_path}/")
+            print(f"  Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
             
             return X_train, X_val, X_test, y_train, y_val, y_test
         else:
@@ -167,7 +167,7 @@ class DataSplitter:
             y_train = np.load(os.path.join(load_path, 'y_train.npy'))
             y_test = np.load(os.path.join(load_path, 'y_test.npy'))
             
-            print(f"📂 Loaded from: {load_path}/")
+            print(f" Loaded from: {load_path}/")
             print(f"   Train: {X_train.shape}, Test: {X_test.shape}")
             
             return X_train, X_test, y_train, y_test
@@ -203,4 +203,4 @@ if __name__ == "__main__":
         save_path='deepfake_model/dataset/splits'
     )
     
-    print("\n✅ Split complete!")
+    print("\n Split complete!")
