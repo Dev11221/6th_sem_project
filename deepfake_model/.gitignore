@@ -19,7 +19,7 @@ __pycache__/
 *.keras
 *.pt
 *.pth
-
+deepfake_model\preprocessing\test_run.py
 # Logs
 *.log
 nohup.out
